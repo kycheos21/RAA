@@ -216,6 +216,7 @@ def create_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tid INTEGER UNIQUE,
             sa_no TEXT,
+            case_number TEXT,
             court_dept TEXT,
             appraisal_amount TEXT,
             minimum_amount TEXT,
@@ -243,7 +244,7 @@ def create_database():
 
 def save_auction_data_to_db(auction_data):
     """경매 데이터를 SQLite에 저장"""
-    if not auction_data or 'item' not in auction_data:
+    if not auction_data:
         print("저장할 경매 데이터가 없습니다.")
         return False
     
@@ -253,48 +254,79 @@ def save_auction_data_to_db(auction_data):
     saved_count = 0
     skipped_count = 0
     
-    for item in auction_data['item']:
+    # 리스트 형태의 데이터 처리
+    for i, row_data in enumerate(auction_data):
         try:
-            # 중복 체크 (tid로)
-            cursor.execute('SELECT id FROM auction_items WHERE tid = ?', (item['tid'],))
-            if cursor.fetchone():
-                skipped_count += 1
+            # row_data는 ['', '', '아파트\n2024-16379\n주소...', '가격정보', '상태', '날짜', '조회수'] 형태
+            if len(row_data) < 4:  # 최소 4개 컬럼 필요
                 continue
+                
+            # 데이터 파싱 (사건번호 추출 포함)
+            address_info = row_data[2] if len(row_data) > 2 else ""
+            price_info = row_data[3] if len(row_data) > 3 else ""
+            status_info = row_data[4] if len(row_data) > 4 else ""
+            date_info = row_data[5] if len(row_data) > 5 else ""
+            view_count = row_data[6] if len(row_data) > 6 else "0"
+            
+            # 사건번호 추출 (정규식 사용) - 물건번호까지 포함
+            import re
+            case_number = ""
+            if address_info:
+                # 2024-16379, 2025-50976, 2023-1809(7) 등의 패턴 추출
+                # 물건번호가 있는 경우: 2023-1809(7) → 2023-1809(7)
+                # 물건번호가 없는 경우: 2024-16379 → 2024-16379
+                case_match = re.search(r'(\d{4}-\d+(?:\(\d+\))?)', address_info)
+                if case_match:
+                    case_number = case_match.group(1)
+            
+            # 중복 체크 (사건번호로)
+            if case_number:
+                cursor.execute('SELECT id FROM auction_items WHERE case_number = ?', (case_number,))
+                if cursor.fetchone():
+                    skipped_count += 1
+                    continue
+            else:
+                # 사건번호가 없으면 주소로 중복 체크
+                cursor.execute('SELECT id FROM auction_items WHERE address = ?', (address_info,))
+                if cursor.fetchone():
+                    skipped_count += 1
+                    continue
             
             # 데이터 삽입
             cursor.execute('''
                 INSERT INTO auction_items (
-                    tid, sa_no, court_dept, appraisal_amount, minimum_amount,
+                    tid, sa_no, case_number, court_dept, appraisal_amount, minimum_amount,
                     success_amount, minimum_percent, success_percent, address,
                     area_info, important_charge, disposal_type, category,
                     special_condition, status_name, bid_date, bid_time, d_day, img_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                item['tid'],
-                item['saNo'],
-                item['crtDpt'],
-                item['apslAmt'],
-                item['minbAmt'],
-                item['sucbAmt'],
-                item['minbPcnt'],
-                item['sucbPcnt'],
-                item['adrs'],
-                item['areaInfo'],
-                item['imptCh'],
-                item['dpsl'],
-                item['ctgr'],
-                item['splCdtn'],
-                item['statNm'],
-                item['bidDt'],
-                item['bidTm'],
-                item['dDay'],
-                item['imgUrl']
+                i + 1,  # tid (순번)
+                f"ITEM_{i+1:03d}",  # sa_no (사건번호)
+                case_number,  # case_number (실제 사건번호)
+                "",  # court_dept
+                price_info,  # appraisal_amount
+                "",  # minimum_amount
+                0,  # success_amount
+                0,  # minimum_percent
+                0,  # success_percent
+                address_info,  # address
+                "",  # area_info
+                "",  # important_charge
+                "",  # disposal_type
+                "",  # category
+                "",  # special_condition
+                status_info,  # status_name
+                date_info,  # bid_date
+                "",  # bid_time
+                "",  # d_day
+                ""  # img_url
             ))
             
             saved_count += 1
             
         except Exception as e:
-            print(f"데이터 저장 오류 (tid: {item.get('tid', 'N/A')}): {e}")
+            print(f"데이터 저장 오류 (행 {i+1}): {e}")
             continue
     
     conn.commit()
@@ -427,14 +459,24 @@ def main():
                 except Exception as e:
                     print(f"즐겨쓰는 검색열기 클릭 실패: {e}")
                 
-                # 안전소액경매 클릭
+                # 안전소액경매 클릭 (Network 탭에서 URL 확인용)
                 print("안전소액경매 클릭 중...")
                 try:
                     safe_auction = driver.find_element(By.XPATH, "//span[@onclick=\"FvMySrch('106099','1')\"]")
                     if safe_auction.is_displayed():
+                        # Network 탭에서 URL 확인을 위해 현재 URL 기록
+                        print(f"클릭 전 URL: {driver.current_url}")
+                        
                         safe_auction.click()
                         print("안전소액경매 클릭 성공")
+                        
+                        # 클릭 후 URL 확인
                         time.sleep(3)  # 페이지 로딩 대기
+                        print(f"클릭 후 URL: {driver.current_url}")
+                        
+                        # Network 요청 로그 확인을 위한 추가 대기
+                        time.sleep(2)
+                        
                     else:
                         print("안전소액경매 버튼이 보이지 않습니다.")
                 except Exception as e:
@@ -476,6 +518,7 @@ def main():
                 
                 # 검색결과 스크래핑
                 print("검색결과 스크래핑 중...")
+                auction_data = []  # 메인 함수에서 초기화
                 try:
                     # 경매 데이터 테이블 찾기
                     auction_table = driver.find_element(By.ID, "tblLst")
@@ -486,7 +529,6 @@ def main():
                         rows = auction_table.find_elements(By.TAG_NAME, "tr")
                         print(f"총 {len(rows)}개의 행 발견")
                         
-                        auction_data = []
                         for i, row in enumerate(rows):
                             try:
                                 cells = row.find_elements(By.TAG_NAME, "td")
@@ -506,7 +548,7 @@ def main():
                     print(f"검색결과 스크래핑 실패: {e}")
                 
                 print("스크래핑 완료. 브라우저를 확인해주세요.")
-                input("Enter 키를 누르면 계속 진행됩니다...")
+                # input("Enter 키를 누르면 계속 진행됩니다...")  # 자동 실행을 위해 주석 처리
                 if auction_data:
                     print("API를 통한 경매 데이터 수집 완료")
                     
