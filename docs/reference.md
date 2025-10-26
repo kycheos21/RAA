@@ -4,7 +4,7 @@
 ### 크롤링 대상 사이트
 #### 탱크옥션
 - **탱크옥션**: tankauction.com
-- **API 엔드포인트**: https://www.tankauction.com/ca/AuctList.php?srchCase=srchAll&pageNo=1&dataSize=20&pageSize=10
+- **API 엔드포인트**: https://www.tankauction.com/ca/AuctList.php?srchCase=srchAll&pageNo=1&dataSize=20&pageSize=10 (POST 방식)
 - **경매검색 페이지**: https://www.tankauction.com/ca/caList.php
 - **ID**: goodauction24
 - **PW**: newstart-1017
