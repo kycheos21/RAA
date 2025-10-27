@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-탱크옥션 크롤링 기본 코드
+탱크옥션 안전소액경매 분석 코드 (SSA - Safe Small Auction)
 - Chrome 드라이버 설정
-- 탱크옥션 사이트 열기
+- 탱크옥션 사이트 열기 및 로그인
+- 안전소액경매 데이터 수집 및 분석
 """
 
 from selenium import webdriver
@@ -123,6 +124,13 @@ def login_tankauction(driver, config):
         current_url = driver.current_url
         if "login" not in current_url.lower():
             print("로그인 성공!")
+            
+            # 세션 쿠키 저장
+            cookies = driver.get_cookies()
+            with open('session_cookies.json', 'w') as f:
+                json.dump(cookies, f)
+            print("세션 쿠키 저장 완료")
+            
             return True
         else:
             print("로그인 실패")
@@ -206,35 +214,25 @@ def get_auction_data_via_api(session, config):
         print(f"API 호출 실패: {e}")
         return None
 
+def extract_case_number(row_data):
+    """auction_data에서 사건번호 추출"""
+    if len(row_data) > 2:
+        lines = row_data[2].split('\n')
+        if len(lines) > 1:
+            return lines[1].strip()  # 두 번째 줄이 사건번호
+    return None
+
 def create_database():
     """SQLite 데이터베이스 생성"""
     conn = sqlite3.connect('tankauction.db')
     cursor = conn.cursor()
     
-    # 기존 데이터 테이블 생성
+    # 기존 데이터 테이블 생성 (간소화)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS old_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tid INTEGER UNIQUE,
-            sa_no TEXT,
             case_number TEXT,
-            court_dept TEXT,
-            appraisal_amount TEXT,
-            minimum_amount TEXT,
-            success_amount INTEGER,
-            minimum_percent INTEGER,
-            success_percent INTEGER,
-            address TEXT,
-            area_info TEXT,
-            important_charge TEXT,
-            disposal_type TEXT,
-            category TEXT,
-            special_condition TEXT,
-            status_name TEXT,
-            bid_date TEXT,
-            bid_time TEXT,
-            d_day TEXT,
-            img_url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -244,6 +242,7 @@ def create_database():
         CREATE TABLE IF NOT EXISTS new_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tid INTEGER UNIQUE,
+            case_number TEXT,
             onclick_function TEXT,
             scraped BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -254,8 +253,11 @@ def create_database():
     conn.close()
     print("SQLite 데이터베이스 생성 완료")
 
-def save_scraping_data_to_db(auction_data):
-    """경매 데이터를 SQLite에 저장"""
+
+
+
+def save_auction_data_to_new_data(auction_data):
+    """auction_data에서 old_data와 중복되지 않는 항목들을 new_data에 저장"""
     if not auction_data:
         print("저장할 경매 데이터가 없습니다.")
         return False
@@ -263,199 +265,21 @@ def save_scraping_data_to_db(auction_data):
     conn = sqlite3.connect('tankauction.db')
     cursor = conn.cursor()
     
+    # new_data 테이블 초기화 (매번 새로 채우기)
+    cursor.execute('DELETE FROM new_data')
+    
     saved_count = 0
     skipped_count = 0
     
-    # 리스트 형태의 데이터 처리
-    for i, row_data in enumerate(auction_data):
+    for row_data in auction_data:
         try:
-            # row_data는 ['', '', '아파트\n2024-16379\n주소...', '가격정보', '상태', '날짜', '조회수', 'tid'] 형태
-            if len(row_data) < 4:  # 최소 4개 컬럼 필요
+            if len(row_data) < 8:  # tid가 있는지 확인
                 continue
                 
-            # 데이터 파싱 (사건번호 추출 포함)
-            address_info = row_data[2] if len(row_data) > 2 else ""
-            price_info = row_data[3] if len(row_data) > 3 else ""
-            status_info = row_data[4] if len(row_data) > 4 else ""
-            date_info = row_data[5] if len(row_data) > 5 else ""
-            view_count = row_data[6] if len(row_data) > 6 else "0"
-            tid = row_data[7] if len(row_data) > 7 else ""  # tid 값
+            tid = str(row_data[7])  # tid 값
             
-            # 사건번호 추출 (정규식 사용) - 물건번호까지 포함
-            import re
-            case_number = ""
-            if address_info:
-                # 2024-16379, 2025-50976, 2023-1809(7) 등의 패턴 추출
-                # 물건번호가 있는 경우: 2023-1809(7) → 2023-1809(7)
-                # 물건번호가 없는 경우: 2024-16379 → 2024-16379
-                case_match = re.search(r'(\d{4}-\d+(?:\(\d+\))?)', address_info)
-                if case_match:
-                    case_number = case_match.group(1)
-            
-            # 중복 체크 (tid로)
-            if tid:
-                cursor.execute('SELECT id FROM old_data WHERE tid = ?', (tid,))
-                if cursor.fetchone():
-                    skipped_count += 1
-                    continue
-            else:
-                # tid가 없으면 사건번호로 중복 체크
-                if case_number:
-                    cursor.execute('SELECT id FROM old_data WHERE case_number = ?', (case_number,))
-                    if cursor.fetchone():
-                        skipped_count += 1
-                        continue
-                else:
-                    # 사건번호도 없으면 주소로 중복 체크
-                    cursor.execute('SELECT id FROM old_data WHERE address = ?', (address_info,))
-                    if cursor.fetchone():
-                        skipped_count += 1
-                        continue
-            
-            # 데이터 삽입
-            cursor.execute('''
-                INSERT INTO scraping_data (
-                    tid, sa_no, case_number, court_dept, appraisal_amount, minimum_amount,
-                    success_amount, minimum_percent, success_percent, address,
-                    area_info, important_charge, disposal_type, category,
-                    special_condition, status_name, bid_date, bid_time, d_day, img_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                tid if tid else i + 1,  # tid (실제 tid 또는 순번)
-                f"ITEM_{i+1:03d}",  # sa_no (사건번호)
-                case_number,  # case_number (실제 사건번호)
-                "",  # court_dept
-                price_info,  # appraisal_amount
-                "",  # minimum_amount
-                0,  # success_amount
-                0,  # minimum_percent
-                0,  # success_percent
-                address_info,  # address
-                "",  # area_info
-                "",  # important_charge
-                "",  # disposal_type
-                "",  # category
-                "",  # special_condition
-                status_info,  # status_name
-                date_info,  # bid_date
-                "",  # bid_time
-                "",  # d_day
-                ""  # img_url
-            ))
-            
-            saved_count += 1
-            
-        except Exception as e:
-            print(f"데이터 저장 오류 (행 {i+1}): {e}")
-            continue
-    
-    conn.commit()
-    conn.close()
-    
-    print(f"데이터 저장 완료: {saved_count}개 저장, {skipped_count}개 건너뜀")
-    return True
-
-def move_scraping_to_old_data():
-    """scraping_data를 old_data로 이동"""
-    conn = sqlite3.connect('tankauction.db')
-    cursor = conn.cursor()
-    
-    # scraping_data 테이블 존재 확인
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scraping_data'")
-    if not cursor.fetchone():
-        print("scraping_data 테이블이 존재하지 않습니다. 이동 작업을 건너뜁니다.")
-        conn.close()
-        return True
-    
-    # old_data 테이블이 없으면 생성
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS old_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tid INTEGER UNIQUE,
-            sa_no TEXT,
-            case_number TEXT,
-            court_dept TEXT,
-            appraisal_amount TEXT,
-            minimum_amount TEXT,
-            success_amount INTEGER,
-            minimum_percent INTEGER,
-            success_percent INTEGER,
-            address TEXT,
-            area_info TEXT,
-            important_charge TEXT,
-            disposal_type TEXT,
-            category TEXT,
-            special_condition TEXT,
-            status_name TEXT,
-            bid_date TEXT,
-            bid_time TEXT,
-            d_day TEXT,
-            img_url TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # scraping_data에서 old_data로 데이터 이동
-    cursor.execute('''
-        INSERT OR REPLACE INTO old_data (
-            tid, sa_no, case_number, court_dept, appraisal_amount, minimum_amount,
-            success_amount, minimum_percent, success_percent, address,
-            area_info, important_charge, disposal_type, category,
-            special_condition, status_name, bid_date, bid_time, d_day, img_url
-        )
-        SELECT 
-            tid, sa_no, case_number, court_dept, appraisal_amount, minimum_amount,
-            success_amount, minimum_percent, success_percent, address,
-            area_info, important_charge, disposal_type, category,
-            special_condition, status_name, bid_date, bid_time, d_day, img_url
-        FROM scraping_data
-    ''')
-    
-    # 이동된 데이터 개수 확인
-    moved_count = cursor.rowcount
-    print(f"데이터 이동 완료: {moved_count}개를 old_data로 이동")
-    
-    # scraping_data 내용만 삭제 (테이블은 유지)
-    cursor.execute('DELETE FROM scraping_data')
-    print("scraping_data 내용 삭제 완료")
-    
-    conn.commit()
-    conn.close()
-    return True
-
-def save_new_data_to_db(auction_data):
-    """신규 항목만 별도 테이블에 저장"""
-    conn = sqlite3.connect('tankauction.db')
-    cursor = conn.cursor()
-    
-    # scraping_data 테이블 존재 확인
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scraping_data'")
-    if not cursor.fetchone():
-        print("scraping_data 테이블이 존재하지 않습니다. 신규 항목 저장을 건너뜁니다.")
-        conn.close()
-        return True
-    
-    # scraping_data에서 tid 가져오기
-    cursor.execute('SELECT tid FROM scraping_data')
-    scraping_tids = [row[0] for row in cursor.fetchall()]
-    
-    saved_count = 0
-    skipped_count = 0
-    
-    # scraping_data의 각 tid를 확인
-    for tid in scraping_tids:
-        try:
-            if not tid:
-                continue
-            
-            # old_data에서 중복 체크
+            # old_data에서만 중복 체크
             cursor.execute('SELECT id FROM old_data WHERE tid = ?', (tid,))
-            if cursor.fetchone():
-                skipped_count += 1
-                continue
-            
-            # new_data에서도 중복 체크
-            cursor.execute('SELECT id FROM new_data WHERE tid = ?', (tid,))
             if cursor.fetchone():
                 skipped_count += 1
                 continue
@@ -463,11 +287,14 @@ def save_new_data_to_db(auction_data):
             # onclick_function 생성
             onclick_function = f"cntsViewPN({tid},1,1,0)"
             
-            # 신규 데이터 저장
+            # 사건번호 추출
+            case_number = extract_case_number(row_data)
+            
+            # new_data에 저장
             cursor.execute('''
-                INSERT INTO new_data (tid, onclick_function, scraped)
-                VALUES (?, ?, ?)
-            ''', (tid, onclick_function, False))
+                INSERT INTO new_data (tid, case_number, onclick_function, scraped)
+                VALUES (?, ?, ?, ?)
+            ''', (tid, case_number, onclick_function, False))
             
             saved_count += 1
             
@@ -479,6 +306,76 @@ def save_new_data_to_db(auction_data):
     conn.close()
     
     print(f"신규 항목 저장 완료: {saved_count}개 저장, {skipped_count}개 건너뜀")
+    return True
+
+def move_new_data_to_old_data():
+    """new_data의 모든 항목을 old_data에 추가 (누적)"""
+    conn = sqlite3.connect('tankauction.db')
+    cursor = conn.cursor()
+    
+    # new_data에서 tid와 case_number 가져오기
+    cursor.execute('SELECT tid, case_number FROM new_data')
+    new_items = cursor.fetchall()
+    
+    moved_count = 0
+    
+    for item in new_items:
+        try:
+            tid = item[0]
+            case_number = item[1]
+            
+            # old_data에 추가 (중복 체크는 UNIQUE 제약으로 처리)
+            cursor.execute('''
+                INSERT OR IGNORE INTO old_data (tid, case_number)
+                VALUES (?, ?)
+            ''', (tid, case_number))
+            
+            if cursor.rowcount > 0:
+                moved_count += 1
+                
+        except Exception as e:
+            print(f"old_data 추가 오류 (tid={tid}): {e}")
+            continue
+    
+    # new_data는 그대로 유지 (이후 상세 페이지 열기용)
+    # cursor.execute('DELETE FROM new_data')  # 이 줄 제거
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"new_data를 old_data로 이동 완료: {moved_count}개 추가")
+    return True
+
+def maintain_old_data_limit():
+    """old_data가 200개를 넘으면 오래된 레코드 삭제"""
+    conn = sqlite3.connect('tankauction.db')
+    cursor = conn.cursor()
+    
+    # 현재 레코드 수 확인
+    cursor.execute('SELECT COUNT(*) FROM old_data')
+    current_count = cursor.fetchone()[0]
+    
+    if current_count > 200:
+        # 초과 개수 계산
+        excess_count = current_count - 200
+        
+        # 오래된 레코드 삭제 (created_at 기준)
+        cursor.execute('''
+            DELETE FROM old_data 
+            WHERE id IN (
+                SELECT id FROM old_data 
+                ORDER BY created_at ASC 
+                LIMIT ?
+            )
+        ''', (excess_count,))
+        
+        deleted_count = cursor.rowcount
+        print(f"old_data 레코드 수 관리: {deleted_count}개 삭제 (현재: {current_count - deleted_count}개)")
+    else:
+        print(f"old_data 레코드 수: {current_count}개 (200개 이하)")
+    
+    conn.commit()
+    conn.close()
     return True
 
 def get_new_data_from_db():
@@ -793,20 +690,32 @@ def main():
                 print("스크래핑 완료. 브라우저를 확인해주세요.")
                 # input("Enter 키를 누르면 계속 진행됩니다...")  # 자동 실행을 위해 주석 처리
                 if auction_data:
-                    print("API를 통한 경매 데이터 수집 완료")
+                    print("경매 데이터 수집 완료")
                     
-                    # 스크래핑 데이터 저장
-                    save_scraping_data_to_db(auction_data)
+                    # 1단계: 신규 항목을 new_data에 저장
+                    save_auction_data_to_new_data(auction_data)
                     
-                    # scraping_data를 old_data로 이동
-                    move_scraping_to_old_data()
+                    # 2단계: new_data를 old_data에 추가 (누적)
+                    move_new_data_to_old_data()
                     
-                    # 신규 데이터만 별도 테이블에 저장
-                    save_new_data_to_db(auction_data)
+                    # 3단계: old_data 레코드 수 관리 (200개 유지)
+                    maintain_old_data_limit()
                     
                     # 신규 항목을 기존 브라우저에서 새 탭으로 열기 (로그인 세션 유지)
                     print("\n신규 항목 상세 페이지를 열기 시작...")
-                    open_new_items.open_new_items_in_browser(driver)
+                    # 간단한 로거 생성
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    open_new_items.open_new_items_in_browser(driver, logger, auction_data)
+                    
+                    # 부동산플래닛 상세 정보 수집
+                    print("\n부동산플래닛 상세 정보 수집을 시작합니다...")
+                    import bdsplanet_scraper
+                    bdsplanet_scraper.scrape_bdsplanet_details(driver, logger)
+                    
+                    print("\n" + "="*50)
+                    print("✅ 전체 프로세스 완료!")
+                    print("="*50)
                         
                 else:
                     print("API를 통한 경매 데이터 수집 실패")
