@@ -44,6 +44,16 @@ def load_config_from_reference():
         pw_match = re.search(r'- \*\*PW\*\*: ([^\n]+)', content)
         if pw_match:
             config['password'] = pw_match.group(1).strip()
+        
+        # 카카오톡 REST API 키 추출
+        kakao_key_match = re.search(r'REST API 키.*?`([^`]+)`', content, re.DOTALL)
+        if kakao_key_match:
+            config['kakao_rest_api_key'] = kakao_key_match.group(1).strip()
+        
+        # 카카오톡 Redirect URI 추출
+        kakao_redirect_match = re.search(r'Redirect URI.*?`([^`]+)`', content, re.DOTALL)
+        if kakao_redirect_match:
+            config['kakao_redirect_uri'] = kakao_redirect_match.group(1).strip()
             
     except Exception as e:
         print(f"Reference.md 파일 읽기 실패: {e}")
@@ -77,6 +87,14 @@ def get_bdsplanet_config():
         'url': config.get('bdsplanet_url', 'https://bdsplanet.com'),
         'username': config.get('username', 'goodauction24@gmail.com'),
         'password': config.get('password', 'newstart-1017')
+    }
+
+def get_kakao_config():
+    """카카오톡 API 관련 설정만 반환"""
+    config = load_config_from_reference()
+    return {
+        'rest_api_key': config.get('kakao_rest_api_key', '0ce58273ec367b2b8736e6fa34d7ef98'),
+        'redirect_uri': config.get('kakao_redirect_uri', 'http://localhost:8080')
     }
 
 if __name__ == "__main__":
