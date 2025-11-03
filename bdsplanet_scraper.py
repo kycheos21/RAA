@@ -21,7 +21,28 @@ from selenium.webdriver.support import expected_conditions as EC
 
 def setup_logging():
     """로깅 설정"""
-    log_filename = f"bdsplanet_test_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    import os
+    import glob
+    
+    # logs/ 폴더 생성
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # 7일 이상 된 로그 파일 삭제
+    try:
+        cutoff_time = datetime.now().timestamp() - (7 * 24 * 60 * 60)  # 7일 전
+        log_pattern = os.path.join(logs_dir, "bdsplanet_test_log_*.log")
+        old_logs = glob.glob(log_pattern)
+        
+        for log_file in old_logs:
+            if os.path.getmtime(log_file) < cutoff_time:
+                os.remove(log_file)
+                print(f"오래된 로그 파일 삭제: {log_file}")
+    except Exception as e:
+        print(f"로그 파일 정리 중 오류: {e}")
+    
+    log_filename = os.path.join(logs_dir, f"bdsplanet_test_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     
     logging.basicConfig(
         level=logging.INFO,
@@ -148,84 +169,70 @@ def extract_unit_price(driver, logger, dong, ho):
             logger.warning("호수 정보 없음, 처리 건너뜀")
             return None, None
         
-        # 4. 호수 클릭 (더보기 버튼 처리 포함)
+        # 4. 호수 목록 전체 스크래핑 (더보기 버튼 클릭 불필요 - 모든 데이터는 이미 DOM에 존재)
+        logger.info(f"호수 {ho} 찾기 시작 (전체 목록 스크래핑)...")
         
-        # Step 1: 더보기 버튼이 있으면 무조건 클릭
         try:
-            # 확장된 XPath 선택자들로 더보기 버튼 찾기
-            more_selectors = [
-                "//a[@class='more']//span[@class='moretxt']",  # 정확한 매치
-                "//a[@class='more']",  # 정확한 클래스
-                "//span[@class='moretxt']",  # 정확한 클래스
-                "//a[contains(@class, 'more')]//span[@class='moretxt']",  # 부분 매치
-                "//a[contains(@class, 'more')]//span[contains(@class, 'moretxt')]",  # 부분 매치
-                "//a[contains(@class, 'more')]",  # 부분 매치
-                "//span[contains(@class, 'moretxt')]",  # 부분 매치
-                "//span[contains(text(), '더보기')]",  # 텍스트로 찾기
-                "//a[contains(text(), '더보기')]",  # 링크 텍스트로 찾기
-                "//span[text()='더보기']",  # 정확한 텍스트
-                "//a[@href='#' and contains(@class, 'more')]",  # href 조합
-                "//a[contains(@class, 'more')]/span[@class='moretxt']",  # 부모-자식 관계
-                "//a[contains(@class, 'more')]/span",  # 부모-자식 관계
-                "//*[contains(@class, 'more')]//*[contains(text(), '더보기')]",  # 유연한 패턴
-                "//a[contains(@class, 'more')]//*[contains(text(), '더보기')]",  # 유연한 패턴
-                "//span[contains(text(), '더 보기')]",  # 공백 포함
-                "//a[contains(@class, 'more') and not(@disabled)]",  # 클릭 가능성 확인
-            ]
+            # 모든 호수 요소 가져오기 (숨겨진 요소 포함)
+            unit_elements = driver.find_elements(By.XPATH, "//span[@data-honm]")
+            logger.info(f"총 {len(unit_elements)}개의 호수 발견")
             
-            more_button = None
-            for i, selector in enumerate(more_selectors):
+            # 전체 호수 테이블 정보 로그 출력
+            logger.info("=== 전체 호수 테이블 정보 ===")
+            for i, unit_element in enumerate(unit_elements):
                 try:
-                    more_button = driver.find_element(By.XPATH, selector)
-                    if more_button and more_button.is_displayed():
-                        logger.info(f"더보기 버튼 발견 (XPath {i+1}): {selector}")
-                        break
-                except:
-                    continue
+                    unit_ho = unit_element.get_attribute("data-honm")
+                    parent_div = unit_element.find_element(By.XPATH, "./ancestor::div[contains(@class, 'clickSpan')]")
+                    price_span = parent_div.find_element(By.XPATH, ".//span[contains(@class, 'hoPrice')]")
+                    price_text = price_span.text.strip()
+                    logger.info(f"호수 {i+1:2d}: {unit_ho}호 - {price_text}")
+                except Exception as e:
+                    logger.info(f"호수 {i+1:2d}: 데이터 추출 실패 - {e}")
+            logger.info("=== 호수 테이블 정보 끝 ===")
             
-            if more_button:
-                driver.execute_script("arguments[0].click();", more_button)
-                time.sleep(2)
-                logger.info("더보기 버튼 클릭 완료")
-            else:
-                logger.info("더보기 버튼이 없거나 이미 펼쳐진 상태")
-        except Exception as e:
-            logger.info(f"더보기 버튼 처리 중 오류: {e}")
-        
-        # Step 2: 호수 찾기 및 클릭
-        try:
-            ho_element = driver.find_element(By.XPATH, f"//span[@data-honm='{ho}']")
+            # 원하는 호수 찾기
+            for unit_element in unit_elements:
+                unit_ho = unit_element.get_attribute("data-honm")
+                if unit_ho == ho:
+                    logger.info(f"호수 {ho}호 발견")
+                    
+                    # ===== 호수 HTML 구조 출력 =====
+                    try:
+                        parent_div = unit_element.find_element(By.XPATH, "./ancestor::div[contains(@class, 'clickSpan')]")
+                        html_content = parent_div.get_attribute('outerHTML')
+                        logger.info(f"=== 호수 {ho}호 HTML 구조 ===")
+                        logger.info(html_content)
+                        logger.info(f"=== 호수 {ho}호 HTML 끝 ===")
+                    except Exception as e:
+                        logger.warning(f"HTML 추출 실패: {e}")
+                    # ====================================
+                    
+                    # 가격 정보 추출
+                    try:
+                        parent_div = unit_element.find_element(By.XPATH, "./ancestor::div[contains(@class, 'clickSpan')]")
+                        price_span = parent_div.find_element(By.XPATH, ".//span[contains(@class, 'hoPrice3') or contains(@class, 'hoPrice')]")
+                        price_text = price_span.get_attribute('innerHTML').strip()
+                        logger.info(f"가격 정보 추출: {price_text}")
+                        
+                        # "5,690만<br>3,490만" 형식 파싱
+                        prices = price_text.replace('<br>', '\n').split('\n')
+                        ai_price = prices[0].replace('만', '').replace(',', '').strip() if len(prices) > 0 and prices[0] else None
+                        public_price = prices[1].replace('만', '').replace(',', '').strip() if len(prices) > 1 and prices[1] else None
+                        
+                        logger.info(f"파싱된 가격 - AI가: {ai_price}, 공시가: {public_price}")
+                        return ai_price, public_price
+                        
+                    except Exception as price_error:
+                        logger.warning(f"호수 {ho}의 가격 정보 추출 실패: {price_error}")
+                        return None, None
             
-            # 일반 클릭 먼저 시도
-            try:
-                ho_element.click()
-                logger.info(f"호수 {ho} 클릭 완료")
-            except:
-                # 실패하면 JavaScript 클릭
-                driver.execute_script("arguments[0].click();", ho_element)
-                logger.info(f"호수 {ho} 클릭 완료 (JS)")
-            
-            time.sleep(2)
-            
-        except Exception as e:
-            logger.warning(f"호수 {ho}를 찾을 수 없습니다: {e}")
+            # 호수를 찾지 못한 경우
+            logger.warning(f"호수 {ho}를 찾을 수 없습니다")
             return None, None
-        
-        # 5. 가격 추출
-        # 클릭한 호수의 부모 div에서 가격 정보 추출
-        parent_div = ho_element.find_element(By.XPATH, "./ancestor::div[contains(@class, 'clickSpan')]")
-        price_span = parent_div.find_element(By.XPATH, ".//span[contains(@class, 'hoPrice')]")
-        price_text = price_span.text.strip()
-        
-        logger.info(f"가격 텍스트: '{price_text}'")
-        
-        # "4,825만\n3,280만" 형식 파싱
-        prices = price_text.split('\n')
-        ai_price = prices[0].replace('만', '').replace(',', '').strip() if len(prices) > 0 and prices[0] else None
-        public_price = prices[1].replace('만', '').replace(',', '').strip() if len(prices) > 1 and prices[1] else None
-        
-        logger.info(f"파싱된 가격 - AI가: {ai_price}, 공시가: {public_price}")
-        return ai_price, public_price
+            
+        except Exception as e:
+            logger.error(f"호수 목록 스크래핑 실패: {e}")
+            return None, None
         
     except Exception as e:
         logger.error(f"호별 가격 추출 실패 (동: {dong}, 호: {ho}): {e}")
@@ -680,11 +687,18 @@ def main():
         # 부동산플래닛 상세 스크래핑
         scrape_bdsplanet_details(driver, logger)
         
-        print("\n스크래핑 완료. 브라우저를 수동으로 닫아주세요.")
+        print("\n스크래핑 완료.")
+        
+        # valid_to_excel.py 자동 실행
+        print("\n구글 시트에 데이터 추가를 시작합니다...")
+        import valid_to_excel
+        valid_to_excel.main()
+        print("\n구글 시트 데이터 추가 완료.")
         
     finally:
-        # driver.quit() 제거 - 브라우저를 열어둠
-        pass
+        # 브라우저 닫기
+        driver.quit()
+        print("브라우저를 닫았습니다.")
 
 if __name__ == "__main__":
     main()

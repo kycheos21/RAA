@@ -33,13 +33,9 @@ venv/
 env/
 ENV/
 
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store

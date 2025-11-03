@@ -703,9 +703,8 @@ def main():
                     
                     # 신규 항목을 기존 브라우저에서 새 탭으로 열기 (로그인 세션 유지)
                     print("\n신규 항목 상세 페이지를 열기 시작...")
-                    # 간단한 로거 생성
-                    import logging
-                    logger = logging.getLogger(__name__)
+                    # 로거 생성 (핸들러 포함)
+                    logger = open_new_items.setup_logging()
                     open_new_items.open_new_items_in_browser(driver, logger, auction_data)
                     
                     # 부동산플래닛 상세 정보 수집

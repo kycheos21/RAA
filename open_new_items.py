@@ -20,8 +20,28 @@ from selenium.webdriver.chrome.options import Options
 
 def setup_logging():
     """로깅 설정"""
+    import glob
+    
+    # logs/ 폴더 생성
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # 7일 이상 된 로그 파일 삭제
+    try:
+        cutoff_time = datetime.now().timestamp() - (7 * 24 * 60 * 60)  # 7일 전
+        log_pattern = os.path.join(logs_dir, "scraping_log_*.log")
+        old_logs = glob.glob(log_pattern)
+        
+        for log_file in old_logs:
+            if os.path.getmtime(log_file) < cutoff_time:
+                os.remove(log_file)
+                print(f"오래된 로그 파일 삭제: {log_file}")
+    except Exception as e:
+        print(f"로그 파일 정리 중 오류: {e}")
+    
     # 로그 파일명에 현재 날짜와 시간 포함
-    log_filename = f"scraping_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_filename = os.path.join(logs_dir, f"scraping_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     
     # 로깅 설정
     logging.basicConfig(
@@ -66,12 +86,22 @@ def create_valid_data_table():
             address TEXT,
             land_area TEXT,
             building_area TEXT,
+            floor TEXT,
+            elev INTEGER,
+            approval_date TEXT,
             appraisal_amount TEXT,
             minimum_amount TEXT,
             failure_count TEXT,
             yearly_transaction_count INTEGER,
+            building_area_pyung TEXT,
+            real_estate_min_price TEXT,
+            real_estate_max_price TEXT,
+            real_estate_avg_price TEXT,
+            unit_ai_price TEXT,
+            unit_public_price TEXT,
             naver_link TEXT,
             bdsplanet_link TEXT,
+            previous_min_price TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -97,7 +127,8 @@ def clear_valid_data_table(logger):
         print(f"❌ valid_data 테이블 초기화 실패: {e}")
 
 def save_to_valid_data_table(tid, case_number, address, land_area, building_area, 
-                           appraisal_amount, minimum_amount, failure_count, yearly_count, naver_link, bdsplanet_link, logger):
+                           appraisal_amount, minimum_amount, failure_count, yearly_count, naver_link, bdsplanet_link, 
+                           floor, elev, approval_date, previous_min_price, logger):
     """valid_data 테이블에 데이터 저장"""
     try:
         conn = sqlite3.connect('tankauction.db')
@@ -107,10 +138,12 @@ def save_to_valid_data_table(tid, case_number, address, land_area, building_area
         cursor.execute('''
             INSERT INTO valid_data 
             (tid, case_number, address, land_area, building_area, 
-             appraisal_amount, minimum_amount, failure_count, yearly_transaction_count, naver_link, bdsplanet_link)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             appraisal_amount, minimum_amount, failure_count, yearly_transaction_count, 
+             naver_link, bdsplanet_link, floor, elev, approval_date, previous_min_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (str(tid), case_number, address, land_area, building_area,
-              appraisal_amount, minimum_amount, failure_count, yearly_count, naver_link, bdsplanet_link))
+              appraisal_amount, minimum_amount, failure_count, yearly_count, 
+              naver_link, bdsplanet_link, floor, elev, approval_date, previous_min_price))
         
         conn.commit()
         conn.close()
@@ -166,6 +199,163 @@ def scrape_bdsplanet_link(driver, logger):
         
     except Exception as e:
         logger.error(f"부동산플래닛 링크 스크래핑 오류: {e}")
+        return None
+
+def scrape_building_info(driver, logger):
+    """상세페이지에서 건축물 정보 스크래핑 (사용승인일자, 승강기, 층수)"""
+    logger.info("건축물 정보 스크래핑 시작")
+    try:
+        # 건축물 정보 테이블 찾기
+        logger.info("1단계: 건축물 정보 테이블 찾기 시도 (ID: bldg_table)")
+        building_table = driver.find_element(By.ID, "bldg_table")
+        logger.info("건축물 정보 테이블 발견")
+        
+        # 기본값 설정
+        approval_date = "N/A"
+        elevator_passenger = None
+        floor = None
+        
+        # 테이블 전체 텍스트 가져오기
+        logger.info("2단계: 테이블 전체 텍스트 가져오기")
+        table_text = building_table.text
+        logger.info(f"테이블 텍스트 확인: {len(table_text)}자")
+        
+        # 사용승인일자 추출
+        logger.info("3단계: 사용승인일자 추출")
+        if "사용승인일자" in table_text:
+            logger.info("테이블에 '사용승인일자' 텍스트 발견")
+            try:
+                # "사용승인일자" 다음에 오는 td 찾기
+                logger.info("사용승인일자 td 요소 찾기 시도")
+                approval_row = building_table.find_element(By.XPATH, ".//th[contains(text(), '사용승인일자')]/following-sibling::td[1]")
+                approval_date = approval_row.text.strip()
+                logger.info(f"사용승인일자 발견: {approval_date}")
+            except Exception as e:
+                logger.warning(f"사용승인일자 추출 오류: {e}")
+        else:
+            logger.warning("테이블에 '사용승인일자' 텍스트 없음")
+        
+        # 승강기(비상/승용) 추출
+        logger.info("4단계: 승강기(승용) 추출")
+        if "승강기(비상/승용)" in table_text:
+            logger.info("테이블에 '승강기(비상/승용)' 텍스트 발견")
+            try:
+                # "승강기(비상/승용)" 다음에 오는 td 찾기
+                logger.info("승강기 td 요소 찾기 시도")
+                elevator_row = building_table.find_element(By.XPATH, ".//th[contains(text(), '승강기(비상/승용)')]/following-sibling::td[1]")
+                elevator_text = elevator_row.text.strip()
+                logger.info(f"승강기 원본 텍스트: {elevator_text}")
+                
+                # "0대 / 0대" 형식에서 추출 (승용만)
+                logger.info("승강기 텍스트 파싱 시도 (정규식)")
+                match = re.search(r'(\d+)대\s*/\s*(\d+)대', elevator_text)
+                if match:
+                    elevator_passenger = int(match.group(2))  # 승용만, 숫자로
+                    logger.info(f"승강기(승용) 발견: {elevator_passenger}")
+                else:
+                    logger.warning(f"승강기 형식 파싱 실패: {elevator_text}")
+            except Exception as e:
+                logger.warning(f"승강기 추출 오류: {e}")
+        else:
+            logger.warning("테이블에 '승강기(비상/승용)' 텍스트 없음")
+        
+        # 층수(지하/지상) 추출
+        logger.info("5단계: 층수(지하/지상) 추출 시작")
+        logger.info("5-1단계: 테이블 텍스트에서 '층수(지하/지상)' 검색")
+        if "층수(지하/지상)" in table_text:
+            logger.info("5-1단계 결과: 테이블에 '층수(지하/지상)' 텍스트 발견")
+            try:
+                # "층수(지하/지상)" 다음에 오는 td 찾기
+                logger.info("5-2단계: XPath로 '층수(지하/지상)' th 요소 찾기 시도")
+                floor_th = building_table.find_element(By.XPATH, ".//th[contains(text(), '층수(지하/지상)')]")
+                logger.info(f"5-2단계 결과: th 요소 발견 - 텍스트: {floor_th.text.strip()}")
+                
+                logger.info("5-3단계: th 다음 sibling인 td 요소 찾기 시도")
+                floor_row = building_table.find_element(By.XPATH, ".//th[contains(text(), '층수(지하/지상)')]/following-sibling::td[1]")
+                logger.info("5-3단계 결과: td 요소 발견")
+                
+                floor_text = floor_row.text.strip()
+                logger.info(f"5-4단계: 층수 원본 텍스트 추출 완료")
+                logger.info(f"5-4단계 결과: '{floor_text}'")
+                
+                # "1층 / 15층" 형식에서 지상 층만 추출
+                logger.info("5-5단계: 정규식으로 층수 파싱 시도")
+                logger.info(f"5-5단계 입력: '{floor_text}'")
+                logger.info("5-5단계 패턴: (\\d+)층\\s*/\\s*(\\d+)층")
+                match = re.search(r'(\d+)층\s*/\s*(\d+)층', floor_text)
+                if match:
+                    logger.info(f"5-5단계 결과: 정규식 매칭 성공")
+                    logger.info(f"5-5단계 매칭 그룹 1 (지하): {match.group(1)}")
+                    logger.info(f"5-5단계 매칭 그룹 2 (지상): {match.group(2)}")
+                    floor = match.group(2)  # 지상 층만 추출 (두 번째 값)
+                    logger.info(f"5-6단계: 지상 층 선택 완료")
+                    logger.info(f"5-6단계 결과: 층수(지상) = {floor}층")
+                else:
+                    logger.warning("5-5단계 결과: 정규식 매칭 실패")
+                    logger.warning(f"5-5단계 실패 원인: 입력 텍스트 '{floor_text}'가 예상 형식과 맞지 않음")
+                    logger.warning(f"5-5단계 예상 형식: 'X층 / Y층' (예: '1층 / 15층')")
+            except Exception as e:
+                logger.error("5단계 오류 발생: 층수 추출 중 예외 발생")
+                logger.error(f"5단계 오류 상세: {type(e).__name__}: {e}")
+                import traceback
+                logger.error(f"5단계 오류 스택: {traceback.format_exc()}")
+        else:
+            logger.warning("5-1단계 결과: 테이블에 '층수(지하/지상)' 텍스트 없음")
+            logger.warning("5-1단계 대응: 층수 추출을 건너뜀")
+        
+        logger.info("건축물 정보 스크래핑 완료")
+        return approval_date, elevator_passenger, floor
+        
+    except Exception as e:
+        logger.error(f"건축물 정보 스크래핑 오류: {e}")
+        return "N/A", None, None
+
+def scrape_previous_min_price(driver, logger):
+    """직전 최저가 추출"""
+    try:
+        logger.info("직전 최저가 추출 시작")
+        
+        # 매각이력 테이블 찾기
+        hist_tbody = driver.find_element(By.ID, "hist_tb")
+        logger.info("매각이력 테이블 발견")
+        
+        rows = hist_tbody.find_elements(By.CLASS_NAME, "hist_tr")
+        logger.info(f"총 {len(rows)}개 행 발견")
+        
+        # 맨 밑에서 두 번째 행 = 직전 차수
+        if len(rows) >= 2:
+            logger.info(f"맨 밑에서 두 번째 행 선택 (인덱스: {len(rows) - 2})")
+            prev_row = rows[len(rows) - 2]
+            
+            # 모든 셀 찾기 (th, td 모두)
+            all_cells = prev_row.find_elements(By.XPATH, ".//th | .//td")
+            logger.info(f"해당 행의 총 셀 개수 (th+td): {len(all_cells)}")
+            
+            # 각 셀의 텍스트 출력
+            for idx, cell in enumerate(all_cells):
+                logger.info(f"셀 {idx}: {cell.text.strip()}")
+            
+            cells = prev_row.find_elements(By.TAG_NAME, "td")
+            logger.info(f"해당 행의 td 개수: {len(cells)}")
+            
+            # HTML 구조: th[구분], td[매각기일], td[최저매각가격], td[결과]
+            # cells는 td만 포함하므로: cells[0]=매각기일, cells[1]=최저매각가격, cells[2]=결과
+            if len(cells) >= 2:
+                prev_min_price = cells[1].text.strip()
+                logger.info(f"td[1] 추출: {prev_min_price}")
+            else:
+                logger.warning(f"td가 2개 미만: {len(cells)}개")
+                return None
+            
+            logger.info(f"직전 최저가 추출 성공: {prev_min_price}")
+            return prev_min_price
+        else:
+            logger.info(f"행이 2개 미만: {len(rows)}개 (1차)")
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"직전 최저가 추출 오류: {e}")
         return None
 
 def scrape_land_transaction_data(driver, logger):
@@ -279,6 +469,12 @@ def open_detail_pages_in_new_tabs(driver, tids, logger, auction_data):
                 # 부동산플래닛 링크 스크래핑
                 bdsplanet_link = scrape_bdsplanet_link(driver, logger)
                 
+                # 건축물 정보 스크래핑 (사용승인일자, 승강기, 층수)
+                approval_date, elev, floor = scrape_building_info(driver, logger)
+                
+                # 직전 최저가 스크래핑
+                previous_min_price = scrape_previous_min_price(driver, logger)
+                
                 # 기본값 설정 (auction_data가 없어도 저장 가능하도록)
                 case_number = "N/A"
                 address = "N/A"
@@ -350,7 +546,8 @@ def open_detail_pages_in_new_tabs(driver, tids, logger, auction_data):
                 
                 # valid_data 테이블에 데이터 저장 (1년간 매매건수가 1건 이상일 때만)
                 save_to_valid_data_table(tid, case_number, address, land_area, building_area, 
-                                      appraisal_amount, minimum_amount, failure_count, yearly_count, naver_link, bdsplanet_link, logger)
+                                      appraisal_amount, minimum_amount, failure_count, yearly_count, naver_link, bdsplanet_link,
+                                      floor, elev, approval_date, previous_min_price, logger)
                 
                 # 링크 정보만 로그에 기록
                 if naver_link:
@@ -360,6 +557,11 @@ def open_detail_pages_in_new_tabs(driver, tids, logger, auction_data):
                 if bdsplanet_link:
                     logger.info(f"부동산플래닛 링크: {bdsplanet_link}")
                     print(f"부동산플래닛 링크: {bdsplanet_link}")
+                
+                # 건축물 정보 출력
+                logger.info(f"사용승인일자: {approval_date}")
+                logger.info(f"승강기(승용): {elev}")
+                logger.info(f"층수(지상): {floor}")
                 
                 print("=" * 50)
                 

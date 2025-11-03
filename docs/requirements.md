@@ -9,6 +9,12 @@
 - ✅ **schedule-1.2.2** - 스케줄링
 - ✅ **sqlite3** - SQLite 데이터베이스 (Python 내장)
 
+### 구글 시트 연동 라이브러리
+- ✅ **gspread-6.2.1** - 구글 시트 Python API 클라이언트
+- ✅ **google-auth-2.41.1** - Google 인증 라이브러리
+- ✅ **google-auth-oauthlib-1.2.3** - OAuth 라이브러리
+- ✅ **google-auth-httplib2-0.2.1** - HTTP 클라이언트
+
 ---
 
 *프로젝트 설정 정보를 기록할 예정*

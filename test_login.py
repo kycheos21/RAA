@@ -13,8 +13,30 @@ from selenium.webdriver.support import expected_conditions as EC
 
 def setup_logging():
     """로깅 설정"""
+    import os
+    import glob
+    from datetime import datetime
+    
+    # logs/ 폴더 생성
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # 7일 이상 된 로그 파일 삭제
+    try:
+        cutoff_time = datetime.now().timestamp() - (7 * 24 * 60 * 60)  # 7일 전
+        log_pattern = os.path.join(logs_dir, "login_test_log_*.log")
+        old_logs = glob.glob(log_pattern)
+        
+        for log_file in old_logs:
+            if os.path.getmtime(log_file) < cutoff_time:
+                os.remove(log_file)
+                print(f"오래된 로그 파일 삭제: {log_file}")
+    except Exception as e:
+        print(f"로그 파일 정리 중 오류: {e}")
+    
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_filename = f"login_test_log_{timestamp}.log"
+    log_filename = os.path.join(logs_dir, f"login_test_log_{timestamp}.log")
     
     logging.basicConfig(
         level=logging.INFO,
